@@ -11,20 +11,27 @@ try:
         gi.require_version('WebKit2', '4.0')
         warnings.warn("Using WebKit2Gtk 4.0 (obsolete); please upgrade to WebKit2Gtk 4.1")
     from gi.repository import Gtk, WebKit2, GLib
-except ImportError:
+except (ImportError, ValueError):
     try:
         import pgi as gi
         gi.require_version('Gtk', '3.0')
         gi.require_version('WebKit2', '4.0')
         from pgi.repository import Gtk, WebKit2, GLib
         warnings.warn("Using PGI and WebKit2Gtk 4.0 (both obsolete); please upgrade to PyGObject and WebKit2Gtk 4.1")
-    except ImportError:
+    except (ImportError, ValueError):
         gi = None
-if gi is None:
-    raise ImportError("Either gi (PyGObject) or pgi (obsolete) module is required.")
+        try:
+            import webview
+        except ImportError:
+            webview = None
+if gi is None and webview is None:
+    raise ImportError("Either gi (PyGObject), pgi (obsolete) module, or pywebview is required.")
 
 import argparse
+import threading
+import time
 import urllib3
+import re
 import requests
 import xml.etree.ElementTree as ET
 import ssl
@@ -37,6 +44,7 @@ from sys import stderr, platform
 from binascii import a2b_base64, b2a_base64
 from urllib.parse import urlparse, urlencode, urlunsplit
 from html.parser import HTMLParser
+from uuid import uuid1
 
 
 class CommentHtmlParser(HTMLParser):
@@ -50,6 +58,91 @@ class CommentHtmlParser(HTMLParser):
 
 COOKIE_FIELDS = ('prelogin-cookie', 'portal-userauthcookie')
 
+
+class SAMLLoginViewWebview:
+    def __init__(self, uri=None, html=None, verbose=False, user_agent=None):
+        self.closed = False
+        self.success = False
+        self.saml_result = {}
+        self.verbose = verbose
+
+        self.lock = threading.Lock()
+
+        self.window = window = webview.create_window('SAML Login', width=500, height=500)
+        webview.start(self.create_login_window,
+            [window, uri, html],
+            user_agent='PAN GlobalProtect' if user_agent is None else user_agent,
+            debug=verbose)
+
+    def create_login_window(self, window, uri, html):
+        window.events.closed += self.on_closed
+        window.events.loaded += self.get_saml_headers
+        if not html is None:
+            window.load_html(html)
+        else:
+            window.load_url(uri)
+
+    def on_closed(self):
+        if self.verbose > 2:
+            print('[WEBVIEW] Window closed', file=stderr)
+        self.closed = not self.success
+
+    def get_saml_headers(self):
+        window = self.window
+        self.lock.acquire()
+        if self.verbose > 1:
+            print('[PAGE   ] Page loaded in thread %x' % threading.get_ident(), file=stderr)
+        uri = window.get_current_url()
+        if self.verbose:
+            print('[PAGE   ] Loaded URI: %s' % uri, file=stderr)
+        # Use 'window.gui.evaluate_js' to bypass pywebview's 'var value = eval("{0}")' closure, which triggers:
+        #
+        #     Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of
+        #     script in the following Content Security Policy directive: "script-src 'self' 'unsafe-inline'".
+        js = 'var value = document.documentElement.outerHTML;\n'
+        if window.gui.renderer == 'cef':
+            unique_id = uuid1().hex
+            js += 'window.external.return_result(JSON.stringify(value), "{0}");'.format(unique_id)
+            html = window.gui.evaluate_js(js, window.uid, unique_id)
+        else:
+            js += 'JSON.stringify(value);'
+            html = window.gui.evaluate_js(js, window.uid)
+        if self.verbose > 2:
+            print('[PAGE   ] Retrieved outerHTML: %s' % html, file=stderr)
+        if not html:
+            self.lock.release()
+            return
+        # In addition to their HTTP header counterparts (which aren't surfaced by pywebview), GlobalProtect adds the
+        # following values to the body of its response after authentication succeeds (line breaks added for clarity):
+        #
+        #     <saml-auth-status>{{STATUS}}</saml-auth-status>
+        #     <prelogin-cookie>{{COOKIE}}</prelogin-cookie>
+        #     <saml-username>{{USERNAME}}</saml-username>
+        #     <saml-slo>{{SLO}}</saml-slo>
+        fd = {}
+        for m in re.finditer('<(?P<header>saml-.+?|(?:prelogin-|portal-userauth)cookie)>(?P<value>.*?)</(?P=header)>', html):
+            fd[m.group('header')] = m.group('value')
+        if not fd:
+            self.lock.release()
+            return
+        if self.verbose:
+            print("[SAML   ] Got SAML result headers: %r" % fd, file=stderr)
+
+        # check if we're done
+        self.saml_result.update(fd, server=urlparse(uri).netloc)
+        self.lock.release()
+        time.sleep(1)
+        self.check_done()
+
+    def check_done(self):
+        self.lock.acquire()
+        d = self.saml_result
+        if 'saml-username' in d and ('prelogin-cookie' in d or 'portal-userauthcookie' in d):
+            if self.verbose:
+                print("[SAML   ] Got all required SAML headers, done.", file=stderr)
+            self.success = True
+            self.window.destroy()
+        self.lock.release()
 
 class SAMLLoginView:
     def __init__(self, uri, html, args):
@@ -389,11 +482,14 @@ def main(args = None):
         webbrowser.open(uri)
         raise SystemExit
 
-    # spawn WebKit view to do SAML interactive login
+    # spawn WebKit view to do SAML interactive login, with pywebview as a fallback
     if args.verbose:
         print("Got SAML %s, opening browser..." % sam, file=stderr)
-    slv = SAMLLoginView(uri, html, args)
-    Gtk.main()
+    if not gi is None:
+        slv = SAMLLoginView(uri, html, args)
+        Gtk.main()
+    else:
+        slv = SAMLLoginViewWebview(uri, html, verbose=args.verbose, user_agent=args.user_agent)
     if slv.closed:
         print("Login window closed by user.", file=stderr)
         p.exit(1)
