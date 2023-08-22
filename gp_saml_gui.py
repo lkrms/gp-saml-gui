@@ -72,7 +72,8 @@ class SAMLLoginViewWebview:
         webview.start(self.create_login_window,
             [window, uri, html],
             user_agent='PAN GlobalProtect' if user_agent is None else user_agent,
-            debug=verbose)
+            debug=verbose,
+            private_mode=False)
 
     def create_login_window(self, window, uri, html):
         window.events.closed += self.on_closed
