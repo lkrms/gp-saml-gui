@@ -1,3 +1,22 @@
+> This fork of [dlenski/gp-saml-gui] is for macOS users who haven't been able to install or build WebKit2-GTK (so,
+> pretty much every macOS user). It uses [pywebview] as a fallback if Python's WebKit2-GTK bindings fail to import, or
+> if the `--pywebview` option is given.
+>
+> As discussed in [#53][macos-issue], it won't be merged upstream in its current form because it uses multiple webview
+> libraries. Adoption of [pywebview] is blocked by its lack of support for HTTP header inspection, which is why this
+> fork only works with GlobalProtect VPNs that copy SAML headers to HTML comments (most do, but yours may not).
+>
+> Until a cleaner solution materialises, I'll endeavour to keep this fork up-to-date. It can be installed with the
+> following Homebrew command:
+>
+> ```shell
+> brew install lkrms/misc/gp-saml-gui
+> ```
+
+[dlenski/gp-saml-gui]: https://github.com/dlenski/gp-saml-gui
+[pywebview]: https://pywebview.flowrl.com/
+[macos-issue]: https://github.com/dlenski/gp-saml-gui/issues/53
+
 gp-saml-gui
 ===========
 
