@@ -60,19 +60,19 @@ COOKIE_FIELDS = ('prelogin-cookie', 'portal-userauthcookie')
 
 
 class SAMLLoginViewWebview:
-    def __init__(self, uri=None, html=None, verbose=False, user_agent=None):
+    def __init__(self, uri, html, args):
         self.closed = False
         self.success = False
         self.saml_result = {}
-        self.verbose = verbose
+        self.verbose = args.verbose
 
         self.lock = threading.Lock()
 
         self.window = window = webview.create_window('SAML Login', width=500, height=500)
         webview.start(self.create_login_window,
             [window, uri, html],
-            user_agent='PAN GlobalProtect' if user_agent is None else user_agent,
-            debug=verbose,
+            user_agent='PAN GlobalProtect' if args.user_agent is None else args.user_agent,
+            debug=args.verbose,
             private_mode=False)
 
     def create_login_window(self, window, uri, html):
@@ -491,7 +491,7 @@ def main(args = None):
         slv = SAMLLoginView(uri, html, args)
         Gtk.main()
     else:
-        slv = SAMLLoginViewWebview(uri, html, verbose=args.verbose, user_agent=args.user_agent)
+        slv = SAMLLoginViewWebview(uri, html, args)
     if slv.closed:
         print("Login window closed by user.", file=stderr)
         p.exit(1)
